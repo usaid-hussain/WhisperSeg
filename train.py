@@ -19,7 +19,8 @@ from evaluate import evaluate
 import subprocess
 import json
 
-from transformers import AdamW, get_linear_schedule_with_warmup
+from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
 
 def train_iteration(batch):
     for key in batch:
