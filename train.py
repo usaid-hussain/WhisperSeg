@@ -19,8 +19,7 @@ from evaluate import evaluate
 import subprocess
 import json
 
-from torch.optim import AdamW
-from transformers import get_linear_schedule_with_warmup
+from transformers import AdamW, get_linear_schedule_with_warmup
 
 def train_iteration(batch):
     for key in batch:
@@ -116,12 +115,46 @@ if __name__ == "__main__":
 
     model = model.to(device)
     
+    # ---------------------------------------------------------
+    # MODIFIED FREEZING LOGIC: Bottom-Half Freezing for Enc/Dec
+    # ---------------------------------------------------------
     if args.freeze_encoder:
-        for para in model.model.encoder.parameters():
-            para.requires_grad = False
+        encoder_midpoint = len(model.model.encoder.layers) // 2
+        decoder_midpoint = len(model.model.decoder.layers) // 2
+
+        # 1. Freeze Encoder Bottom
+        for param in model.model.encoder.embed_tokens.parameters():
+            param.requires_grad = False
+        for param in model.model.encoder.embed_positions.parameters():
+            param.requires_grad = False
+
+        for i in range(encoder_midpoint):
+            for param in model.model.encoder.layers[i].parameters():
+                param.requires_grad = False
+
+        # 2. Freeze Decoder Bottom
+        for param in model.model.decoder.embed_tokens.parameters():
+            param.requires_grad = False
+        for param in model.model.decoder.embed_positions.parameters():
+            param.requires_grad = False
+
+        for i in range(decoder_midpoint):
+            for param in model.model.decoder.layers[i].parameters():
+                param.requires_grad = False
+
+        # 3. Ensure Top Halves are Trainable
+        for i in range(encoder_midpoint, len(model.model.encoder.layers)):
+            for param in model.model.encoder.layers[i].parameters():
+                param.requires_grad = True
+
+        for i in range(decoder_midpoint, len(model.model.decoder.layers)):
+            for param in model.model.decoder.layers[i].parameters():
+                param.requires_grad = True
     else:
-        for para in model.model.encoder.parameters():
+        # Full network training
+        for para in model.parameters():
             para.requires_grad = True
+    # ---------------------------------------------------------
             
     no_decay = ['bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
@@ -161,7 +194,7 @@ if __name__ == "__main__":
 
     training_dataloader = DataLoader( training_dataset, batch_size = args.batch_size , shuffle = True , 
                                              worker_init_fn = lambda x:[np.random.seed( epoch  + x ),  
-                                                                    torch.manual_seed( epoch + x) ], 
+                                                                        torch.manual_seed( epoch + x) ], 
                                              num_workers = args.num_workers, 
                                              drop_last= True, 
                                              pin_memory = False
@@ -169,7 +202,7 @@ if __name__ == "__main__":
     if len(training_dataloader) == 0:
         training_dataloader = DataLoader( training_dataset, batch_size = args.batch_size , shuffle = True , 
                                              worker_init_fn = lambda x:[np.random.seed( epoch  + x ),  
-                                                                    torch.manual_seed( epoch + x) ], 
+                                                                        torch.manual_seed( epoch + x) ], 
                                              num_workers = args.num_workers, 
                                              drop_last= False,  ## set drop_last to False to fully utilize small dataset
                                              pin_memory = False
@@ -251,7 +284,7 @@ if __name__ == "__main__":
                 eval_res = evaluate( audio_list_val, label_list_val, segmenter, args.batch_size, args.max_length, num_trials =1, num_beams=1, target_cluster = None )
          
                 print("Epoch: %d, current_step: %d, validation segment F1 score: %.2f, frame F1 score: %.2f"%( epoch, current_step, 
-                                                                      eval_res["segment_wise"][-1], eval_res["frame_wise"][-1] ))
+                                                                                                      eval_res["segment_wise"][-1], eval_res["frame_wise"][-1] ))
                 if args.use_wandb:
                     wandb.log(
                         {
@@ -315,11 +348,10 @@ if __name__ == "__main__":
                          "--model", hf_model_folder,
                          "--output_dir", ct2_model_folder,
                          "--quantization", "int8_float16"
-                       ])
+                        ])
     try:
         os.remove( args.model_folder + "/status.json" )
     except:
         pass
     
-    print("All Done!")    
-
+    print("All Done!")
